@@ -1,15 +1,15 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
 use hyper::server::Server;
 use hyper::service::{make_service_fn, service_fn};
+use std::net::SocketAddr;
+use std::sync::Arc;
 
-mod state;
 mod handlers;
 mod models;
+mod state;
 mod tls;
 
-use state::AppState;
 use handlers::handle;
+use state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

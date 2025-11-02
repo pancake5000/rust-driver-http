@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
 use scylla::deserialize::value::DeserializeValue;
-use scylla::serialize::value::SerializeValue;
 use scylla::frame::response::result::ColumnType;
+use scylla::serialize::value::SerializeValue;
 use scylla::serialize::writers::CellWriter;
 use scylla::serialize::writers::WrittenCellProof;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Item {
@@ -22,9 +22,7 @@ pub struct InsertResponse {
 pub struct CustomText<'a>(pub &'a str);
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for CustomText<'frame> {
-    fn type_check(
-        typ: &ColumnType,
-    ) -> Result<(), scylla::deserialize::TypeCheckError> {
+    fn type_check(typ: &ColumnType) -> Result<(), scylla::deserialize::TypeCheckError> {
         <&str as DeserializeValue<'frame, 'metadata>>::type_check(typ)
     }
 
