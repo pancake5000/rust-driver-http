@@ -41,7 +41,7 @@ impl AppState {
         let session: Session = builder.build().await.context("failed to build session")?;
 
         // Ensure keyspace and table exist
-        let ks_cql = "CREATE KEYSPACE IF NOT EXISTS demo WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}";
+        let ks_cql = "CREATE KEYSPACE IF NOT EXISTS demo WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1} AND tablets = {'enabled': false};";
         session.query_unpaged(ks_cql, ()).await?;
         let tbl_cql = "CREATE TABLE IF NOT EXISTS demo.items (id uuid PRIMARY KEY, name text, value bigint);";
         session.query_unpaged(tbl_cql, ()).await?;

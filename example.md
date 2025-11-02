@@ -8,7 +8,7 @@ cargo run
 
 Manual creation of keyspace and table (curently in main)
 ```
-cqlsh 127.0.0.1 9042 -e "CREATE KEYSPACE IF NOT EXISTS demo WITH replication = {'class':'SimpleStrategy','replication_factor':1};"
+cqlsh 127.0.0.1 9042 -e "CREATE KEYSPACE IF NOT EXISTS demo WITH replication = {'class':'SimpleStrategy','replication_factor':1} AND tablets = {'enabled': false};"
 cqlsh 127.0.0.1 9042 -e "CREATE TABLE IF NOT EXISTS demo.items (id uuid PRIMARY KEY, name text, value bigint);"
 ```
 
