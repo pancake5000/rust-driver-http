@@ -1,8 +1,13 @@
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
-use scylla::statement::prepared::PreparedStatement;
+use scylla::client::execution_profile::ExecutionProfile;
+use scylla::policies::load_balancing;
+use scylla::policies::retry::DefaultRetryPolicy;
+use scylla::statement::{prepared::PreparedStatement,Consistency};
 use std::sync::Arc;
+use std::time::Duration;
 use anyhow::Context;
+
 
 pub struct AppState {
     pub session: Arc<Session>,
@@ -25,6 +30,14 @@ impl AppState {
             println!("TLS not enabled. Connecting without TLS.");
         }
 
+        let profile = ExecutionProfile::builder()
+            .consistency(Consistency::LocalOne)
+            .request_timeout(Some(Duration::from_secs(42)))
+            .load_balancing_policy(Arc::new(load_balancing::DefaultPolicy::default()))
+            .retry_policy(Arc::new(DefaultRetryPolicy::new()))
+            .build();
+        let profile_handle = profile.into_handle();
+        builder = builder.default_execution_profile_handle(profile_handle);
         let session: Session = builder.build().await.context("failed to build session")?;
 
         // Ensure keyspace and table exist
