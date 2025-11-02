@@ -1,6 +1,13 @@
 use hyper::{Body, Method, Request, Response, StatusCode};
+use scylla::client::execution_profile::ExecutionProfile;
+use scylla::cluster::NodeAddr;
+use scylla::policies::load_balancing::NodeIdentifier;
+use scylla::policies::{retry::DefaultRetryPolicy,load_balancing};
+use scylla::statement::{Consistency, Statement, unprepared};
 use std::convert::Infallible;
+use std::net::{SocketAddr,Ipv4Addr,IpAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use futures::TryStreamExt;
 
 use crate::state::AppState;
@@ -26,13 +33,41 @@ pub async fn handle(req: Request<Body>, state: Arc<AppState>) -> Result<Response
         }
     }
 }
+fn get_node(req: &Request<Body>) -> Option<load_balancing::NodeIdentifier>{
+    if let Some(hv) = req.headers().get("node") {
+        if let Ok(s) = hv.to_str() {
+            if !s.is_empty() { 
+                let node_string = s.to_string();
+                if let Ok(ipv4) = node_string.parse::<Ipv4Addr>() {
+                    return Some(load_balancing::NodeIdentifier::NodeAddress(SocketAddr::new(IpAddr::V4(ipv4), 9042)))
+                }
+            }
+        }
+    }
+    None
+}
+
+fn exec_profile_with_single_target_lb(node_id: NodeIdentifier) -> ExecutionProfile{
+    ExecutionProfile::builder()
+    .consistency(Consistency::LocalOne)
+    .request_timeout(Some(Duration::from_secs(42)))
+    .load_balancing_policy(load_balancing::SingleTargetLoadBalancingPolicy::new(node_id,None))
+    .retry_policy(Arc::new(DefaultRetryPolicy::new()))
+    .build()
+}
 
 async fn handle_insert(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
+    let node_opt = get_node(&req);
     let whole = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
     match serde_json::from_slice::<Item>(&whole) {
         Ok(item) => {
-            let cql = "INSERT INTO demo.items (id, name, value) VALUES (?, ?, ?)";
-            let _ = state.session.query_unpaged(cql, (item.id, item.name, item.value)).await;
+            let mut statement  = unprepared::Statement::from( "INSERT INTO demo.items (id, name, value) VALUES (?, ?, ?)");
+            if let Some(node_id) = node_opt{
+                let execution_profile = exec_profile_with_single_target_lb(node_id);
+                let profile_handle = execution_profile.into_handle();
+                statement.set_execution_profile_handle(Some(profile_handle));
+            }
+            let _ = state.session.query_unpaged(statement, (item.id, item.name, item.value)).await;
             let body = serde_json::to_string(&InsertResponse { success: true }).unwrap_or_else(|_| "{}".to_string());
             Ok(Response::new(Body::from(body)))
         }
@@ -45,12 +80,17 @@ async fn handle_insert(req: Request<Body>, state: Arc<AppState>) -> Result<Respo
 }
 
 async fn handle_insert_batch(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
+    let node_opt = get_node(&req);
     let whole = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
     match serde_json::from_slice::<Vec<Item>>(&whole) {
         Ok(items) => {
             use scylla::statement::batch::Batch;
             let mut batch = Batch::new(scylla::statement::batch::BatchType::Logged);
-
+            if let Some(node_id) = node_opt{
+                let execution_profile = exec_profile_with_single_target_lb(node_id);
+                let profile_handle = execution_profile.into_handle();
+                batch.set_execution_profile_handle(Some(profile_handle));
+            }
             let mut values_vec: Vec<(uuid::Uuid, String, i64)> = Vec::with_capacity(items.len());
             for item in items {
                 batch.append_statement(state.prepared_insert.clone());
@@ -78,10 +118,16 @@ async fn handle_insert_batch(req: Request<Body>, state: Arc<AppState>) -> Result
 }
 
 async fn handle_insert_prepared(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
+    let node_opt = get_node(&req);
     let whole = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
     match serde_json::from_slice::<Item>(&whole) {
         Ok(item) => {
-            let prep = state.prepared_insert.clone();
+            let mut prep = state.prepared_insert.clone();
+            if let Some(node_id) = node_opt{
+                let execution_profile = exec_profile_with_single_target_lb(node_id);
+                let profile_handle = execution_profile.into_handle();
+                prep.set_execution_profile_handle(Some(profile_handle));
+            }
             let res = state.session.execute_unpaged(&prep, (item.id, item.name, item.value)).await;
             match res {
                 Ok(_) => {
@@ -126,8 +172,18 @@ async fn handle_custom_insert(req: Request<Body>, state: Arc<AppState>) -> Resul
     }
 }
 
-async fn handle_query_iter(_req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
-    match state.session.query_iter("SELECT id, name, value FROM demo.items", ()).await {
+async fn handle_query_iter(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
+    let node_opt = get_node(&req);
+    
+    let mut statement = Statement::from("SELECT id, name, value FROM demo.items");
+    
+    if let Some(node_id) = node_opt{
+        let execution_profile = exec_profile_with_single_target_lb(node_id);
+        let profile_handle = execution_profile.into_handle();
+        statement.set_execution_profile_handle(Some(profile_handle));
+    }
+
+    match state.session.query_iter(statement,()).await {
         Ok(pager) => {
             match pager.rows_stream::<(uuid::Uuid, String, i64)>() {
                 Ok(mut rows_stream) => {
