@@ -15,6 +15,13 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub async fn cleanup(&self) -> anyhow::Result<()> {
+        println!("Cleaning up demo keyspace...");
+        self.session.query_unpaged("DROP KEYSPACE IF EXISTS demo;", ()).await?;
+        println!("Cleanup completed.");
+        Ok(())
+    }
+
     pub async fn init() -> anyhow::Result<Self> {
         // Build SessionBuilder and optionally enable TLS via tls::load_tls()
         let mut builder = SessionBuilder::new()
