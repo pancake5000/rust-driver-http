@@ -24,6 +24,7 @@ rustls-pki-types = "1.13"
 anyhow = "1.0.100"
 base64 = "0.21"
 hyper = { version = "0.14", features = ["full"] }
+url = "2"
 time = "0.3"
 bytes = "1.0"
 

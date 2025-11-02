@@ -1,13 +1,12 @@
+use anyhow::Context;
+use scylla::client::execution_profile::ExecutionProfile;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
-use scylla::client::execution_profile::ExecutionProfile;
 use scylla::policies::load_balancing;
 use scylla::policies::retry::DefaultRetryPolicy;
-use scylla::statement::{prepared::PreparedStatement,Consistency};
+use scylla::statement::{Consistency, prepared::PreparedStatement};
 use std::sync::Arc;
 use std::time::Duration;
-use anyhow::Context;
-
 
 pub struct AppState {
     pub session: Arc<Session>,
@@ -43,7 +42,8 @@ impl AppState {
         // Ensure keyspace and table exist
         let ks_cql = "CREATE KEYSPACE IF NOT EXISTS demo WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1} AND tablets = {'enabled': false};";
         session.query_unpaged(ks_cql, ()).await?;
-        let tbl_cql = "CREATE TABLE IF NOT EXISTS demo.items (id uuid PRIMARY KEY, name text, value bigint);";
+        let tbl_cql =
+            "CREATE TABLE IF NOT EXISTS demo.items (id uuid PRIMARY KEY, name text, value bigint);";
         session.query_unpaged(tbl_cql, ()).await?;
 
         // Prepare statements
@@ -51,6 +51,9 @@ impl AppState {
             .prepare("INSERT INTO demo.items (id, name, value) VALUES (?, ?, ?)")
             .await?;
 
-        Ok(AppState { session: Arc::new(session), prepared_insert })
+        Ok(AppState {
+            session: Arc::new(session),
+            prepared_insert,
+        })
     }
 }

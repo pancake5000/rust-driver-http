@@ -1,9 +1,9 @@
-use std::fs::File;
-use std::io::BufReader;
+use anyhow::Context;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls_pemfile::certs;
-use anyhow::Context;
+use std::fs::File;
+use std::io::BufReader;
 use std::sync::Arc;
 
 /// Attempts to load TLS root certificates from `certs/ca.crt`.
