@@ -14,8 +14,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::models::{InsertResponse, Item, ItemValue, PageRequest, TokenRangeRequest};
 use crate::state::AppState;
-use crate::models::{Item, ItemValue, InsertResponse, PageRequest, TokenRangeRequest};
 
 // Top-level router that delegates to smaller handler functions.
 pub async fn handle(
@@ -116,7 +116,7 @@ async fn handle_insert(
             Ok(resp)
         }
     };
-    if is_debug{
+    if is_debug {
         let structured_history = history_listener.clone_structured_history();
         println!("Request History: {structured_history}")
     };
@@ -137,17 +137,18 @@ async fn handle_insert_batch(
         Ok(items) => {
             use scylla::statement::batch::Batch;
             let mut batch = Batch::new(scylla::statement::batch::BatchType::Logged);
-            
+
             if let Some(node_id) = node_opt {
                 let execution_profile = exec_profile_with_single_target_lb(node_id);
                 let profile_handle = execution_profile.into_handle();
                 batch.set_execution_profile_handle(Some(profile_handle));
             }
-            if is_debug{
+            if is_debug {
                 batch.set_history_listener(history_listener.clone());
             }
-            
-            let mut values_vec: Vec<(uuid::Uuid, String, ItemValue)> = Vec::with_capacity(items.len());
+
+            let mut values_vec: Vec<(uuid::Uuid, String, ItemValue)> =
+                Vec::with_capacity(items.len());
             for item in items {
                 batch.append_statement(state.prepared_insert.clone());
                 values_vec.push((item.id, item.name, item.value));
@@ -172,7 +173,7 @@ async fn handle_insert_batch(
             Ok(resp)
         }
     };
-    if is_debug{
+    if is_debug {
         let structured_history = history_listener.clone_structured_history();
         println!("Request History: {structured_history}")
     };
@@ -225,7 +226,7 @@ async fn handle_insert_prepared(
             Ok(resp)
         }
     };
-    if is_debug{
+    if is_debug {
         let structured_history = history_listener.clone_structured_history();
         println!("Request History: {structured_history}")
     };
@@ -280,7 +281,6 @@ async fn handle_query_iter(
     }
 }
 
-
 // async fn handle_custom_query_paged(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
 //     use base64;
 //     use scylla::response::PagingState;
@@ -288,14 +288,29 @@ async fn handle_query_iter(
 
 //     let whole = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
 //     let params: PageRequest = serde_json::from_slice(&whole).unwrap_or(PageRequest { paging_state: None, page_size: Some(10) });
+//     let whole = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
+//     let params: PageRequest = serde_json::from_slice(&whole).unwrap_or(PageRequest { paging_state: None, page_size: Some(10) });
 
 //     let mut statement = scylla::statement::unprepared::Statement::new("SELECT text FROM demo.custom_texts");
 //     if let Some(size) = params.page_size {
 //         statement = statement.with_page_size(size);
 //     }
-    
+//     let mut statement = scylla::statement::unprepared::Statement::new("SELECT text FROM demo.custom_texts");
+//     if let Some(size) = params.page_size {
+//         statement = statement.with_page_size(size);
+//     }
+
+//     let paging_state = PagingState::start();
 //     let paging_state = PagingState::start();
 
+//     let (page, paging_state_response) = match state.session.query_single_page(statement, (), paging_state).await {
+//         Ok(res) => res,
+//         Err(e) => {
+//             let mut resp = Response::new(Body::from(format!("Paging error: {}", e)));
+//             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+//             return Ok(resp);
+//         }
+//     };
 //     let (page, paging_state_response) = match state.session.query_single_page(statement, (), paging_state).await {
 //         Ok(res) => res,
 //         Err(e) => {
@@ -326,6 +341,11 @@ async fn handle_query_iter(
 //     Ok(Response::new(Body::from(serde_json::to_string(&body).unwrap())))
 // }
 
+// async fn handle_custom_query_paged_all(_req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
+//     use scylla::statement::unprepared::Statement;
+//     use scylla::response::PagingState;
+//     use std::ops::ControlFlow;
+//     use base64;
 // async fn handle_custom_query_paged_all(_req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
 //     use scylla::statement::unprepared::Statement;
 //     use scylla::response::PagingState;

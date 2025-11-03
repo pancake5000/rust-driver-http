@@ -16,7 +16,9 @@ pub struct AppState {
 impl AppState {
     pub async fn cleanup(&self) -> anyhow::Result<()> {
         println!("Cleaning up demo keyspace...");
-        self.session.query_unpaged("DROP KEYSPACE IF EXISTS demo;", ()).await?;
+        self.session
+            .query_unpaged("DROP KEYSPACE IF EXISTS demo;", ())
+            .await?;
         println!("Cleanup completed.");
         Ok(())
     }

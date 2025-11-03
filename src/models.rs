@@ -28,9 +28,7 @@ pub struct PageRequest {
 }
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for ItemValue {
-    fn type_check(
-        typ: &ColumnType,
-    ) -> Result<(), scylla::deserialize::TypeCheckError> {
+    fn type_check(typ: &ColumnType) -> Result<(), scylla::deserialize::TypeCheckError> {
         <i64 as DeserializeValue<'frame, 'metadata>>::type_check(typ)
     }
 
