@@ -3,7 +3,7 @@ use scylla::observability::history::HistoryCollector;
 use url::form_urlencoded;
 
 use scylla::client::execution_profile::ExecutionProfile;
-use scylla::cluster::NodeAddr;
+
 use scylla::policies::load_balancing::NodeIdentifier;
 use scylla::policies::{load_balancing, retry::DefaultRetryPolicy};
 use scylla::statement::{Consistency, Statement, unprepared};
@@ -28,8 +28,15 @@ pub async fn handle(
         (&Method::POST, "/insert_batch") => handle_insert_batch(req, state).await,
         (&Method::POST, "/insert_prepared") => handle_insert_prepared(req, state).await,
         (&Method::GET, "/query_iter") => handle_query_iter(req, state).await,
-        // (&Method::GET, "/custom_query_paged_all") => handle_custom_query_paged_all(req, state).await,
-        // (&Method::POST, "/custom_query_token_range") => handle_custom_query_token_range(req, state).await,
+        (&Method::GET, "/custom_query") => handle_custom_query(req, state).await,
+        (&Method::POST, "/custom_query_paged") => handle_custom_query_paged(req, state).await,
+        (&Method::GET, "/custom_query_paged_all") => {
+            handle_custom_query_paged_all(req, state).await
+        }
+        (&Method::POST, "/custom_query_token_range") => {
+            handle_custom_query_token_range(req, state).await
+        }
+        (&Method::GET, "/metadata") => handle_metadata(req, state).await,
         _ => {
             let mut not_found = Response::new(Body::from("Not Found"));
             *not_found.status_mut() = StatusCode::NOT_FOUND;
@@ -281,6 +288,33 @@ async fn handle_query_iter(
     }
 }
 
+async fn handle_metadata(
+    _req: Request<Body>,
+    state: Arc<AppState>,
+) -> Result<Response<Body>, Infallible> {
+    if let Err(e) = state.session.refresh_metadata().await {
+        let mut resp = Response::new(Body::from(format!("Failed to refresh metadata {}", e)));
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        return Ok(resp);
+    }
+    if let Some(keyspace_metadata) = &state.session.get_cluster_state().get_keyspace("demo") {
+        if let Some(table_metadata) = keyspace_metadata.tables.get("items"){
+        //println!("{:#?}", table_metadata);
+        
+            let body = format!("{:#?}", table_metadata);
+            Ok(Response::new(Body::from(body)))
+        }
+        else{
+            let mut resp = Response::new(Body::from("Table 'items' not found in keyspace 'demo'"));
+            *resp.status_mut() = StatusCode::NOT_FOUND;
+            Ok(resp)
+        }
+    } else {
+        let mut resp = Response::new(Body::from("Keyspace 'demo' not found"));
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        Ok(resp)
+    }
+}
 // async fn handle_custom_query_paged(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
 //     use base64;
 //     use scylla::response::PagingState;
