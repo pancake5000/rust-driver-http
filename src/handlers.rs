@@ -14,9 +14,9 @@ use scylla::statement::{Consistency, Statement, unprepared};
 use futures::TryStreamExt;
 use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
-use std::ops::ControlFlow;
 
 use crate::models::{CustomText, InsertResponse, Item, PageRequest, TokenRangeRequest};
 use crate::state::AppState;
@@ -33,14 +33,14 @@ pub async fn handle(
         (&Method::POST, "/insert_prepared") => handle_insert_prepared(req, state).await,
         (&Method::POST, "/custom_insert") => handle_custom_insert(req, state).await,
         (&Method::GET, "/query_iter") => handle_query_iter(req, state).await,
-        (&Method::GET, "/paged_query") => match handle_paged_query(req, state).await{
-                                            Ok(resp) => Ok(resp),
-                                            Err(e) => {
-                                                let mut resp = Response::new(Body::from(format!("Paged query error: {}", e)));
-                                                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                                                Ok(resp)
-                                            }
-                                        },
+        (&Method::GET, "/paged_query") => match handle_paged_query(req, state).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                let mut resp = Response::new(Body::from(format!("Paged query error: {}", e)));
+                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                Ok(resp)
+            }
+        },
         (&Method::GET, "/metadata") => handle_metadata(req, state).await,
         _ => {
             let mut not_found = Response::new(Body::from("Not Found"));
@@ -341,7 +341,7 @@ async fn handle_paged_query(
     }
 
     let (paging_state_string, page_size) = match serde_json::from_slice::<PageRequest>(&whole) {
-        Ok(page_request) => (page_request.paging_state,page_request.page_size),
+        Ok(page_request) => (page_request.paging_state, page_request.page_size),
         Err(e) => {
             let mut resp = Response::new(Body::from(format!("invalid json: {}", e)));
             *resp.status_mut() = StatusCode::BAD_REQUEST;
@@ -350,49 +350,51 @@ async fn handle_paged_query(
     };
     let paging_state = PagingState::new_from_raw_bytes(paging_state_string.as_bytes());
     statement = statement.with_page_size(page_size);
-    let (res, paging_state_response) = match state.session
+    let (res, paging_state_response) = match state
+        .session
         .query_single_page(statement.clone(), &[], paging_state)
-        .await{
-            Ok(out) => out,
-            Err(e) => {
-                let mut resp = Response::new(Body::from(format!("Paging error: {}", e)));
-                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                return Ok(resp);   
-            }
-        };
-    let row_result = match res.into_rows_result(){
+        .await
+    {
+        Ok(out) => out,
+        Err(e) => {
+            let mut resp = Response::new(Body::from(format!("Paging error: {}", e)));
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            return Ok(resp);
+        }
+    };
+    let row_result = match res.into_rows_result() {
         Ok(rr) => rr,
         Err(e) => {
             let mut resp = Response::new(Body::from(format!("Row result error: {}", e)));
             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            return Ok(resp);   
+            return Ok(resp);
         }
     };
-    let mut row_vector:Vec<serde_json::Value> = Vec::new();
+    let mut row_vector: Vec<serde_json::Value> = Vec::new();
     for row in row_result.rows::<(uuid::Uuid, String, ItemValue)>()? {
-        if let Ok((id, name, value)) = row{
+        if let Ok((id, name, value)) = row {
             row_vector.push(serde_json::json!({"id": id, "name": name, "value": value.0}));
         }
     }
-    
-    let (response_paging_state,are_more_pages) = match paging_state_response.into_paging_control_flow() {
-        ControlFlow::Break(()) => {
-            (None,false)
-        }
-        ControlFlow::Continue(new_paging_state) => {
-            // Update paging state from the response, so that query
-            // will be resumed from where it ended the last time.
-            let paging_state_string = match new_paging_state.as_bytes_slice() {
-                Some(bytes) => String::from_utf8(bytes.as_ref().to_vec()).unwrap_or_default(),
-                None => {
-                    let mut resp = Response::new(Body::from(format!("Paging state response error")));
-                    *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                    return Ok(resp);
-                }
-            };
-            (Some(paging_state_string),true)
-        }
-    };
+
+    let (response_paging_state, are_more_pages) =
+        match paging_state_response.into_paging_control_flow() {
+            ControlFlow::Break(()) => (None, false),
+            ControlFlow::Continue(new_paging_state) => {
+                // Update paging state from the response, so that query
+                // will be resumed from where it ended the last time.
+                let paging_state_string = match new_paging_state.as_bytes_slice() {
+                    Some(bytes) => String::from_utf8(bytes.as_ref().to_vec()).unwrap_or_default(),
+                    None => {
+                        let mut resp =
+                            Response::new(Body::from(format!("Paging state response error")));
+                        *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                        return Ok(resp);
+                    }
+                };
+                (Some(paging_state_string), true)
+            }
+        };
     let body = serde_json::to_string(&serde_json::json!({"are_more_pages":are_more_pages,
                                                                     "paging_state":response_paging_state.unwrap_or_default(),
                                                                     "rows": row_vector}))
@@ -409,13 +411,12 @@ async fn handle_metadata(
         return Ok(resp);
     }
     if let Some(keyspace_metadata) = &state.session.get_cluster_state().get_keyspace("demo") {
-        if let Some(table_metadata) = keyspace_metadata.tables.get("items"){
-        //println!("{:#?}", table_metadata);
-        
+        if let Some(table_metadata) = keyspace_metadata.tables.get("items") {
+            //println!("{:#?}", table_metadata);
+
             let body = format!("{:#?}", table_metadata);
             Ok(Response::new(Body::from(body)))
-        }
-        else{
+        } else {
             let mut resp = Response::new(Body::from("Table 'items' not found in keyspace 'demo'"));
             *resp.status_mut() = StatusCode::NOT_FOUND;
             Ok(resp)
