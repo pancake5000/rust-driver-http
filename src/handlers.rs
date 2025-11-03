@@ -1,5 +1,8 @@
 use hyper::{Body, Method, Request, Response, StatusCode};
+use scylla::errors::RowsError;
 use scylla::observability::history::HistoryCollector;
+use scylla::response::PagingState;
+use tokio::time::error;
 use url::form_urlencoded;
 
 use scylla::client::execution_profile::ExecutionProfile;
@@ -10,10 +13,12 @@ use scylla::statement::{Consistency, Statement, unprepared};
 
 use futures::TryStreamExt;
 use std::convert::Infallible;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::models::{InsertResponse, Item, ItemValue, PageRequest, TokenRangeRequest};
+use crate::models::{CustomText, InsertResponse, Item, PageRequest, TokenRangeRequest};
 use crate::state::AppState;
 
 // Top-level router that delegates to smaller handler functions.
@@ -26,9 +31,16 @@ pub async fn handle(
         (&Method::POST, "/insert") => handle_insert(req, state).await,
         (&Method::POST, "/insert_batch") => handle_insert_batch(req, state).await,
         (&Method::POST, "/insert_prepared") => handle_insert_prepared(req, state).await,
+        (&Method::POST, "/custom_insert") => handle_custom_insert(req, state).await,
         (&Method::GET, "/query_iter") => handle_query_iter(req, state).await,
-        // (&Method::GET, "/custom_query_paged_all") => handle_custom_query_paged_all(req, state).await,
-        // (&Method::POST, "/custom_query_token_range") => handle_custom_query_token_range(req, state).await,
+        (&Method::GET, "/paged_query") => match handle_paged_query(req, state).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                let mut resp = Response::new(Body::from(format!("Paged query error: {}", e)));
+                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                Ok(resp)
+            }
+        },
         (&Method::GET, "/metadata") => handle_metadata(req, state).await,
         _ => {
             let mut not_found = Response::new(Body::from("Not Found"));
@@ -37,14 +49,15 @@ pub async fn handle(
         }
     }
 }
-
 fn get_node(req: &Request<Body>) -> Option<load_balancing::NodeIdentifier> {
     if let Some(hv) = req.headers().get("node") {
         if let Ok(s) = hv.to_str() {
             if !s.is_empty() {
                 let node_string = s.to_string();
-                if let Ok(socket_addr) = node_string.parse::<std::net::SocketAddr>() {
-                    return Some(load_balancing::NodeIdentifier::NodeAddress(socket_addr));
+                if let Ok(ipv4) = node_string.parse::<Ipv4Addr>() {
+                    return Some(load_balancing::NodeIdentifier::NodeAddress(
+                        SocketAddr::new(IpAddr::V4(ipv4), 9042),
+                    ));
                 }
             }
         }
@@ -62,7 +75,6 @@ fn is_debug(req: &Request<Body>) -> bool {
     }
     false
 }
-
 fn exec_profile_with_single_target_lb(node_id: NodeIdentifier) -> ExecutionProfile {
     ExecutionProfile::builder()
         .consistency(Consistency::LocalOne)
@@ -136,7 +148,6 @@ async fn handle_insert_batch(
             use scylla::statement::batch::Batch;
             let mut batch = Batch::new(scylla::statement::batch::BatchType::Logged);
 
-
             if let Some(node_id) = node_opt {
                 let execution_profile = exec_profile_with_single_target_lb(node_id);
                 let profile_handle = execution_profile.into_handle();
@@ -146,8 +157,7 @@ async fn handle_insert_batch(
                 batch.set_history_listener(history_listener.clone());
             }
 
-            let mut values_vec: Vec<(uuid::Uuid, String, ItemValue)> =
-                Vec::with_capacity(items.len());
+            let mut values_vec: Vec<(uuid::Uuid, String, i64)> = Vec::with_capacity(items.len());
             for item in items {
                 batch.append_statement(state.prepared_insert.clone());
                 values_vec.push((item.id, item.name, item.value));
@@ -232,6 +242,34 @@ async fn handle_insert_prepared(
     result
 }
 
+async fn handle_custom_insert(
+    req: Request<Body>,
+    state: Arc<AppState>,
+) -> Result<Response<Body>, Infallible> {
+    let whole = hyper::body::to_bytes(req.into_body())
+        .await
+        .unwrap_or_default();
+    let v: serde_json::Value = match serde_json::from_slice(&whole) {
+        Ok(val) => val,
+        Err(e) => {
+            let mut resp = Response::new(Body::from(format!("invalid json: {}", e)));
+            *resp.status_mut() = StatusCode::BAD_REQUEST;
+            return Ok(resp);
+        }
+    };
+    let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("default");
+    let test_id = uuid::Uuid::new_v4();
+    let insert = "INSERT INTO demo.custom_texts (id, text) VALUES (?, ?)";
+    match state.session.query_unpaged(insert, (test_id, text)).await {
+        Ok(_) => Ok(Response::new(Body::from("{\"success\":true}"))),
+        Err(e) => {
+            let mut resp = Response::new(Body::from(format!("insert error: {}", e)));
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            Ok(resp)
+        }
+    }
+}
+
 async fn handle_query_iter(
     req: Request<Body>,
     state: Arc<AppState>,
@@ -252,13 +290,13 @@ async fn handle_query_iter(
     }
 
     match state.session.query_iter(statement, ()).await {
-        Ok(pager) => match pager.rows_stream::<(uuid::Uuid, String, ItemValue)>() {
+        Ok(pager) => match pager.rows_stream::<(uuid::Uuid, String, i64)>() {
             Ok(mut rows_stream) => {
                 let mut out = Vec::new();
                 while let Some(row_res) = rows_stream.try_next().await.unwrap_or(None) {
                     let (id, name, value) = row_res;
                     out.push(
-                        serde_json::json!({"id": id.to_string(), "name": name, "value": value.0}),
+                        serde_json::json!({"id": id.to_string(), "name": name, "value": value}),
                     );
                 }
                 let body = serde_json::to_string(&serde_json::json!({"rows": out}))
@@ -279,164 +317,90 @@ async fn handle_query_iter(
         }
     }
 }
-// async fn handle_custom_query_paged(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
-//     use base64;
-//     use scylla::response::PagingState;
-//     use std::ops::ControlFlow;
+async fn handle_paged_query(
+    req: Request<Body>,
+    state: Arc<AppState>,
+) -> Result<Response<Body>, RowsError> {
+    // Implementation of paged query handler
+    let node_opt = get_node(&req);
+    let is_debug = is_debug(&req);
+    let history_listener = Arc::new(HistoryCollector::new());
 
-//     let whole = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
-//     let params: PageRequest = serde_json::from_slice(&whole).unwrap_or(PageRequest { paging_state: None, page_size: Some(10) });
-//     let whole = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
-//     let params: PageRequest = serde_json::from_slice(&whole).unwrap_or(PageRequest { paging_state: None, page_size: Some(10) });
+    let mut statement = Statement::from("SELECT id, name, value FROM demo.items").with_page_size(2);
+    let whole = hyper::body::to_bytes(req.into_body())
+        .await
+        .unwrap_or_default();
 
-//     let mut statement = scylla::statement::unprepared::Statement::new("SELECT text FROM demo.custom_texts");
-//     if let Some(size) = params.page_size {
-//         statement = statement.with_page_size(size);
-//     }
-//     let mut statement = scylla::statement::unprepared::Statement::new("SELECT text FROM demo.custom_texts");
-//     if let Some(size) = params.page_size {
-//         statement = statement.with_page_size(size);
-//     }
+    if let Some(node_id) = node_opt {
+        let execution_profile = exec_profile_with_single_target_lb(node_id);
+        let profile_handle = execution_profile.into_handle();
+        statement.set_execution_profile_handle(Some(profile_handle));
+    }
+    if is_debug {
+        statement.set_history_listener(history_listener.clone());
+    }
 
-//     let paging_state = PagingState::start();
-//     let paging_state = PagingState::start();
+    let (paging_state_string, page_size) = match serde_json::from_slice::<PageRequest>(&whole) {
+        Ok(page_request) => (page_request.paging_state, page_request.page_size),
+        Err(e) => {
+            let mut resp = Response::new(Body::from(format!("invalid json: {}", e)));
+            *resp.status_mut() = StatusCode::BAD_REQUEST;
+            return Ok(resp);
+        }
+    };
+    let paging_state = PagingState::new_from_raw_bytes(paging_state_string.as_bytes());
+    statement = statement.with_page_size(page_size);
+    let (res, paging_state_response) = match state
+        .session
+        .query_single_page(statement.clone(), &[], paging_state)
+        .await
+    {
+        Ok(out) => out,
+        Err(e) => {
+            let mut resp = Response::new(Body::from(format!("Paging error: {}", e)));
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            return Ok(resp);
+        }
+    };
+    let row_result = match res.into_rows_result() {
+        Ok(rr) => rr,
+        Err(e) => {
+            let mut resp = Response::new(Body::from(format!("Row result error: {}", e)));
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            return Ok(resp);
+        }
+    };
+    let mut row_vector: Vec<serde_json::Value> = Vec::new();
+    for row in row_result.rows::<(uuid::Uuid, String, ItemValue)>()? {
+        if let Ok((id, name, value)) = row {
+            row_vector.push(serde_json::json!({"id": id, "name": name, "value": value.0}));
+        }
+    }
 
-//     let (page, paging_state_response) = match state.session.query_single_page(statement, (), paging_state).await {
-//         Ok(res) => res,
-//         Err(e) => {
-//             let mut resp = Response::new(Body::from(format!("Paging error: {}", e)));
-//             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-//             return Ok(resp);
-//         }
-//     };
-//     let (page, paging_state_response) = match state.session.query_single_page(statement, (), paging_state).await {
-//         Ok(res) => res,
-//         Err(e) => {
-//             let mut resp = Response::new(Body::from(format!("Paging error: {}", e)));
-//             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-//             return Ok(resp);
-//         }
-//     };
-
-//     let mut results = Vec::new();
-//     if let Ok(rows_result) = page.into_rows_result() {
-//         if let Ok(rows) = rows_result.rows::<(CustomText,)>() {
-//             for row in rows {
-//                 if let Ok((CustomText(text),)) = row {
-//                     results.push(serde_json::json!({ "text": text }));
-//                 }
-//             }
-//         }
-//     }
-//     let next_paging_state = match paging_state_response.into_paging_control_flow() {
-//         ControlFlow::Break(()) => None,
-//         ControlFlow::Continue(new_paging_state) => new_paging_state.as_bytes_slice().map(|bytes| base64::encode(bytes.as_ref())),
-//     };
-//     let body = serde_json::json!({
-//         "results": results,
-//         "next_paging_state": next_paging_state
-//     });
-//     Ok(Response::new(Body::from(serde_json::to_string(&body).unwrap())))
-// }
-
-// async fn handle_custom_query_paged_all(_req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
-//     use scylla::statement::unprepared::Statement;
-//     use scylla::response::PagingState;
-//     use std::ops::ControlFlow;
-//     use base64;
-// async fn handle_custom_query_paged_all(_req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
-//     use scylla::statement::unprepared::Statement;
-//     use scylla::response::PagingState;
-//     use std::ops::ControlFlow;
-//     use base64;
-
-// //     let mut statement = Statement::new("SELECT text FROM demo.custom_texts").with_page_size(10);
-// //     let mut paging_state = PagingState::start();
-// //     let mut results = Vec::new();
-
-//     loop {
-//         let (page, paging_state_response) = match state.session.query_single_page(statement.clone(), (), paging_state).await {
-//             Ok(res) => res,
-//             Err(e) => {
-//                 let mut resp = Response::new(Body::from(format!("Paging error: {}", e)));
-//                 *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-//                 return Ok(resp);
-//             }
-//         };
-//         if let Ok(rows_result) = page.into_rows_result() {
-//             if let Ok(rows) = rows_result.rows::<(CustomText,)>() {
-//                 for row in rows {
-//                     if let Ok((CustomText(text),)) = row {
-//                         results.push(serde_json::json!({ "text": text }));
-//                     }
-//                 }
-//             }
-//         }
-//         match paging_state_response.into_paging_control_flow() {
-//             ControlFlow::Break(()) => break,
-//             ControlFlow::Continue(new_paging_state) => {
-//                 paging_state = new_paging_state;
-//             }
-//         }
-//     }
-//     let body = serde_json::json!({
-//         "results": results
-//     });
-//     Ok(Response::new(Body::from(serde_json::to_string(&body).unwrap())))
-// }
-
-// async fn handle_custom_query_token_range(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
-//     use scylla::statement::unprepared::Statement;
-//     use scylla::response::PagingState;
-//     use std::ops::ControlFlow;
-//     use base64;
-
-//     let whole = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
-//     let params: TokenRangeRequest = match serde_json::from_slice(&whole) {
-//         Ok(p) => p,
-//         Err(e) => {
-//             let mut resp = Response::new(Body::from(format!("invalid json: {}", e)));
-//             *resp.status_mut() = StatusCode::BAD_REQUEST;
-//             return Ok(resp);
-//         }
-//     };
-
-//     let mut statement = Statement::new("SELECT id, text FROM demo.custom_texts WHERE token(id) > ? AND token(id) <= ?");
-//     if let Some(size) = params.page_size {
-//         statement = statement.with_page_size(size);
-//     }
-//     let paging_state = PagingState::start();
-
-//     let (page, paging_state_response) = match state.session.query_single_page(statement, (params.start_token, params.end_token), paging_state).await {
-//         Ok(res) => res,
-//         Err(e) => {
-//             let mut resp = Response::new(Body::from(format!("Paging error: {}", e)));
-//             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-//             return Ok(resp);
-//         }
-//     };
-
-//     let mut results = Vec::new();
-//     if let Ok(rows_result) = page.into_rows_result() {
-//         if let Ok(rows) = rows_result.rows::<(uuid::Uuid, CustomText)>() {
-//             for row in rows {
-//                 if let Ok((id, CustomText(text))) = row {
-//                     results.push(serde_json::json!({ "id": id, "text": text }));
-//                 }
-//             }
-//         }
-//     }
-//     let next_paging_state = match paging_state_response.into_paging_control_flow() {
-//         ControlFlow::Break(()) => None,
-//         ControlFlow::Continue(new_paging_state) => new_paging_state.as_bytes_slice().map(|bytes| base64::encode(bytes.as_ref())),
-//     };
-//     let body = serde_json::json!({
-//         "results": results,
-//         "next_paging_state": next_paging_state
-//     });
-//     Ok(Response::new(Body::from(serde_json::to_string(&body).unwrap())))
-// }
-
+    let (response_paging_state, are_more_pages) =
+        match paging_state_response.into_paging_control_flow() {
+            ControlFlow::Break(()) => (None, false),
+            ControlFlow::Continue(new_paging_state) => {
+                // Update paging state from the response, so that query
+                // will be resumed from where it ended the last time.
+                let paging_state_string = match new_paging_state.as_bytes_slice() {
+                    Some(bytes) => String::from_utf8(bytes.as_ref().to_vec()).unwrap_or_default(),
+                    None => {
+                        let mut resp =
+                            Response::new(Body::from(format!("Paging state response error")));
+                        *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                        return Ok(resp);
+                    }
+                };
+                (Some(paging_state_string), true)
+            }
+        };
+    let body = serde_json::to_string(&serde_json::json!({"are_more_pages":are_more_pages,
+                                                                    "paging_state":response_paging_state.unwrap_or_default(),
+                                                                    "rows": row_vector}))
+        .unwrap_or_else(|_| "{}".to_string());
+    Ok(Response::new(Body::from(body)))
+}
 async fn handle_metadata(
     _req: Request<Body>,
     state: Arc<AppState>,
@@ -447,13 +411,12 @@ async fn handle_metadata(
         return Ok(resp);
     }
     if let Some(keyspace_metadata) = &state.session.get_cluster_state().get_keyspace("demo") {
-        if let Some(table_metadata) = keyspace_metadata.tables.get("items"){
-        //println!("{:#?}", table_metadata);
-        
+        if let Some(table_metadata) = keyspace_metadata.tables.get("items") {
+            //println!("{:#?}", table_metadata);
+
             let body = format!("{:#?}", table_metadata);
             Ok(Response::new(Body::from(body)))
-        }
-        else{
+        } else {
             let mut resp = Response::new(Body::from("Table 'items' not found in keyspace 'demo'"));
             *resp.status_mut() = StatusCode::NOT_FOUND;
             Ok(resp)

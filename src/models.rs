@@ -23,8 +23,8 @@ pub struct InsertResponse {
 
 #[derive(Deserialize)]
 pub struct PageRequest {
-    pub paging_state: Option<String>, // base64-encoded
-    pub page_size: Option<i32>,
+    pub paging_state: String, // base64-encoded
+    pub page_size: i32,
 }
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for ItemValue {
