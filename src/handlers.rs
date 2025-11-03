@@ -279,7 +279,6 @@ async fn handle_query_iter(
         }
     }
 }
-
 // async fn handle_custom_query_paged(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
 //     use base64;
 //     use scylla::response::PagingState;
