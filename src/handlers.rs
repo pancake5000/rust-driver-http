@@ -1,3 +1,5 @@
+use base64::Engine;
+use base64::engine::general_purpose;
 use hyper::{Body, Method, Request, Response, StatusCode};
 use scylla::errors::RowsError;
 use scylla::observability::history::HistoryCollector;
@@ -18,7 +20,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::models::{CustomText, InsertResponse, Item, PageRequest, TokenRangeRequest};
+use crate::models::{ItemValue, InsertResponse, Item, PageRequest, TokenRangeRequest};
 use crate::state::AppState;
 
 // Top-level router that delegates to smaller handler functions.
@@ -157,7 +159,7 @@ async fn handle_insert_batch(
                 batch.set_history_listener(history_listener.clone());
             }
 
-            let mut values_vec: Vec<(uuid::Uuid, String, i64)> = Vec::with_capacity(items.len());
+            let mut values_vec: Vec<(uuid::Uuid, String, ItemValue)> = Vec::with_capacity(items.len());
             for item in items {
                 batch.append_statement(state.prepared_insert.clone());
                 values_vec.push((item.id, item.name, item.value));
@@ -348,7 +350,17 @@ async fn handle_paged_query(
             return Ok(resp);
         }
     };
-    let paging_state = PagingState::new_from_raw_bytes(paging_state_string.as_bytes());
+    let paging_state = match paging_state_string.as_str() {
+        "start" => PagingState::start(),
+        other =>{ 
+            let decoded_bytes: Vec<u8> = general_purpose::STANDARD
+                .decode(other)
+                .expect("Invalid Base64");
+
+            // If you need Arc<[u8]> again
+            let arc_bytes: Arc<[u8]> = Arc::from(decoded_bytes);
+            PagingState::new_from_raw_bytes(arc_bytes)}
+    };
     statement = statement.with_page_size(page_size);
     let (res, paging_state_response) = match state
         .session
@@ -384,7 +396,7 @@ async fn handle_paged_query(
                 // Update paging state from the response, so that query
                 // will be resumed from where it ended the last time.
                 let paging_state_string = match new_paging_state.as_bytes_slice() {
-                    Some(bytes) => String::from_utf8(bytes.as_ref().to_vec()).unwrap_or_default(),
+                    Some(bytes) => general_purpose::STANDARD.encode(bytes.as_ref()),
                     None => {
                         let mut resp =
                             Response::new(Body::from(format!("Paging state response error")));

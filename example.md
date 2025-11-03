@@ -28,7 +28,7 @@ curl -X POST "http://127.0.0.1:3000/insert"\
 ```
 You can get table metadata
 ```
-curl -X POST http://127.0.0.1:3000/metadata     
+curl -X GET http://127.0.0.1:3000/metadata     
 ```
 You can add debug(it prints on server not on client)
 ```
@@ -61,6 +61,9 @@ GET /query_iter
 ```
 GET 'http://127.0.0.1:3000/query_iter'
 ```
+curl -X GET 'http://127.0.0.1:3000/paged_query'\
+-H "Content-Type: application/json"\
+-d = '{"paging_state":"start","page_size":2}'
 
 POST /custom_insert and GET /custom_query
 ```
