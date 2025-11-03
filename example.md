@@ -19,7 +19,23 @@ curl -X POST http://127.0.0.1:3000/insert \
   -H "Content-Type: application/json" \
   -d '{"id":"550e8400-e29b-41d4-a716-446655440000","name":"alice","value":123}'
 ```
-
+You can choose node and pass requests only to him
+```
+curl -X POST "http://127.0.0.1:3000/insert"\
+  -H "Content-Type: application/json" \
+  -H "node: 127.0.0.2:9042" \
+  -d '{"id":"550e8400-e29b-41d4-a716-446655440050","name":"alice","value":123}'
+```
+You can get table metadata
+```
+curl -X POST http://127.0.0.1:3000/metadata     
+```
+You can add debug(it prints on server not on client)
+```
+curl -X POST "http://127.0.0.1:3000/insert?debug=true"\
+  -H "Content-Type: application/json" \
+  -d '{"id":"550e8400-e29b-41d4-a716-446655440050","name":"alice","value":123}'
+```
 POST /insert_prepared
 Purpose: prepares the INSERT and executes it (current implementation prepares per request).
 ```
@@ -53,6 +69,23 @@ curl -X POST http://127.0.0.1:3000/custom_insert \
   -d '{"text":"hello advanced world"}'
 
 curl http://127.0.0.1:3000/custom_query
+```
+You can choose node and pass requests only to him
+```
+curl -X POST "http://127.0.0.1:3000/insert"\
+  -H "Content-Type: application/json" \
+  -H "node: 127.0.0.2:9042" \
+  -d '{"id":"550e8400-e29b-41d4-a716-446655440050","name":"alice","value":123}'
+```
+You can get table metadata
+```
+curl -X POST http://127.0.0.1:3000/metadata     
+```
+You can add debug(it prints on server not on client)
+```
+curl -X POST "http://127.0.0.1:3000/insert?debug=true"\
+  -H "Content-Type: application/json" \
+  -d '{"id":"550e8400-e29b-41d4-a716-446655440050","name":"alice","value":123}'
 ```
 
 ```
