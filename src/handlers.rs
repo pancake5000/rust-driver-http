@@ -3,7 +3,7 @@ use scylla::observability::history::HistoryCollector;
 use url::form_urlencoded;
 
 use scylla::client::execution_profile::ExecutionProfile;
-use scylla::cluster::NodeAddr;
+
 use scylla::policies::load_balancing::NodeIdentifier;
 use scylla::policies::{load_balancing, retry::DefaultRetryPolicy};
 use scylla::statement::{Consistency, Statement, unprepared};
@@ -37,6 +37,7 @@ pub async fn handle(
         (&Method::POST, "/custom_query_token_range") => {
             handle_custom_query_token_range(req, state).await
         }
+        (&Method::GET, "/metadata") => handle_metadata(req, state).await,
         _ => {
             let mut not_found = Response::new(Body::from("Not Found"));
             *not_found.status_mut() = StatusCode::NOT_FOUND;
@@ -121,7 +122,7 @@ async fn handle_insert(
             Ok(resp)
         }
     };
-    if is_debug{
+    if is_debug {
         let structured_history = history_listener.clone_structured_history();
         println!("Request History: {structured_history}")
     };
@@ -142,16 +143,16 @@ async fn handle_insert_batch(
         Ok(items) => {
             use scylla::statement::batch::Batch;
             let mut batch = Batch::new(scylla::statement::batch::BatchType::Logged);
-            
+
             if let Some(node_id) = node_opt {
                 let execution_profile = exec_profile_with_single_target_lb(node_id);
                 let profile_handle = execution_profile.into_handle();
                 batch.set_execution_profile_handle(Some(profile_handle));
             }
-            if is_debug{
+            if is_debug {
                 batch.set_history_listener(history_listener.clone());
             }
-            
+
             let mut values_vec: Vec<(uuid::Uuid, String, i64)> = Vec::with_capacity(items.len());
             for item in items {
                 batch.append_statement(state.prepared_insert.clone());
@@ -177,7 +178,7 @@ async fn handle_insert_batch(
             Ok(resp)
         }
     };
-    if is_debug{
+    if is_debug {
         let structured_history = history_listener.clone_structured_history();
         println!("Request History: {structured_history}")
     };
@@ -230,7 +231,7 @@ async fn handle_insert_prepared(
             Ok(resp)
         }
     };
-    if is_debug{
+    if is_debug {
         let structured_history = history_listener.clone_structured_history();
         println!("Request History: {structured_history}")
     };
@@ -562,4 +563,32 @@ async fn handle_custom_query_token_range(
     Ok(Response::new(Body::from(
         serde_json::to_string(&body).unwrap(),
     )))
+}
+
+async fn handle_metadata(
+    _req: Request<Body>,
+    state: Arc<AppState>,
+) -> Result<Response<Body>, Infallible> {
+    if let Err(e) = state.session.refresh_metadata().await {
+        let mut resp = Response::new(Body::from(format!("Failed to refresh metadata {}", e)));
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        return Ok(resp);
+    }
+    if let Some(keyspace_metadata) = &state.session.get_cluster_state().get_keyspace("demo") {
+        if let Some(table_metadata) = keyspace_metadata.tables.get("items"){
+        //println!("{:#?}", table_metadata);
+        
+            let body = format!("{:#?}", table_metadata);
+            Ok(Response::new(Body::from(body)))
+        }
+        else{
+            let mut resp = Response::new(Body::from("Table 'items' not found in keyspace 'demo'"));
+            *resp.status_mut() = StatusCode::NOT_FOUND;
+            Ok(resp)
+        }
+    } else {
+        let mut resp = Response::new(Body::from("Keyspace 'demo' not found"));
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        Ok(resp)
+    }
 }
