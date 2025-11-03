@@ -10,7 +10,6 @@ use scylla::statement::{Consistency, Statement, unprepared};
 
 use futures::TryStreamExt;
 use std::convert::Infallible;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,14 +27,8 @@ pub async fn handle(
         (&Method::POST, "/insert_batch") => handle_insert_batch(req, state).await,
         (&Method::POST, "/insert_prepared") => handle_insert_prepared(req, state).await,
         (&Method::GET, "/query_iter") => handle_query_iter(req, state).await,
-        (&Method::GET, "/custom_query") => handle_custom_query(req, state).await,
-        (&Method::POST, "/custom_query_paged") => handle_custom_query_paged(req, state).await,
-        (&Method::GET, "/custom_query_paged_all") => {
-            handle_custom_query_paged_all(req, state).await
-        }
-        (&Method::POST, "/custom_query_token_range") => {
-            handle_custom_query_token_range(req, state).await
-        }
+        // (&Method::GET, "/custom_query_paged_all") => handle_custom_query_paged_all(req, state).await,
+        // (&Method::POST, "/custom_query_token_range") => handle_custom_query_token_range(req, state).await,
         (&Method::GET, "/metadata") => handle_metadata(req, state).await,
         _ => {
             let mut not_found = Response::new(Body::from("Not Found"));
@@ -50,10 +43,8 @@ fn get_node(req: &Request<Body>) -> Option<load_balancing::NodeIdentifier> {
         if let Ok(s) = hv.to_str() {
             if !s.is_empty() {
                 let node_string = s.to_string();
-                if let Ok(ipv4) = node_string.parse::<Ipv4Addr>() {
-                    return Some(load_balancing::NodeIdentifier::NodeAddress(
-                        SocketAddr::new(IpAddr::V4(ipv4), 9042),
-                    ));
+                if let Ok(socket_addr) = node_string.parse::<std::net::SocketAddr>() {
+                    return Some(load_balancing::NodeIdentifier::NodeAddress(socket_addr));
                 }
             }
         }
@@ -144,6 +135,7 @@ async fn handle_insert_batch(
         Ok(items) => {
             use scylla::statement::batch::Batch;
             let mut batch = Batch::new(scylla::statement::batch::BatchType::Logged);
+
 
             if let Some(node_id) = node_opt {
                 let execution_profile = exec_profile_with_single_target_lb(node_id);
@@ -285,34 +277,6 @@ async fn handle_query_iter(
             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             Ok(resp)
         }
-    }
-}
-
-async fn handle_metadata(
-    _req: Request<Body>,
-    state: Arc<AppState>,
-) -> Result<Response<Body>, Infallible> {
-    if let Err(e) = state.session.refresh_metadata().await {
-        let mut resp = Response::new(Body::from(format!("Failed to refresh metadata {}", e)));
-        *resp.status_mut() = StatusCode::NOT_FOUND;
-        return Ok(resp);
-    }
-    if let Some(keyspace_metadata) = &state.session.get_cluster_state().get_keyspace("demo") {
-        if let Some(table_metadata) = keyspace_metadata.tables.get("items"){
-        //println!("{:#?}", table_metadata);
-        
-            let body = format!("{:#?}", table_metadata);
-            Ok(Response::new(Body::from(body)))
-        }
-        else{
-            let mut resp = Response::new(Body::from("Table 'items' not found in keyspace 'demo'"));
-            *resp.status_mut() = StatusCode::NOT_FOUND;
-            Ok(resp)
-        }
-    } else {
-        let mut resp = Response::new(Body::from("Keyspace 'demo' not found"));
-        *resp.status_mut() = StatusCode::NOT_FOUND;
-        Ok(resp)
     }
 }
 // async fn handle_custom_query_paged(req: Request<Body>, state: Arc<AppState>) -> Result<Response<Body>, Infallible> {
@@ -472,3 +436,31 @@ async fn handle_metadata(
 //     });
 //     Ok(Response::new(Body::from(serde_json::to_string(&body).unwrap())))
 // }
+
+async fn handle_metadata(
+    _req: Request<Body>,
+    state: Arc<AppState>,
+) -> Result<Response<Body>, Infallible> {
+    if let Err(e) = state.session.refresh_metadata().await {
+        let mut resp = Response::new(Body::from(format!("Failed to refresh metadata {}", e)));
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        return Ok(resp);
+    }
+    if let Some(keyspace_metadata) = &state.session.get_cluster_state().get_keyspace("demo") {
+        if let Some(table_metadata) = keyspace_metadata.tables.get("items"){
+        //println!("{:#?}", table_metadata);
+        
+            let body = format!("{:#?}", table_metadata);
+            Ok(Response::new(Body::from(body)))
+        }
+        else{
+            let mut resp = Response::new(Body::from("Table 'items' not found in keyspace 'demo'"));
+            *resp.status_mut() = StatusCode::NOT_FOUND;
+            Ok(resp)
+        }
+    } else {
+        let mut resp = Response::new(Body::from("Keyspace 'demo' not found"));
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        Ok(resp)
+    }
+}
